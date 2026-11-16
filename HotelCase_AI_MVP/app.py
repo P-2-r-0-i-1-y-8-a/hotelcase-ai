@@ -1,18 +1,16 @@
 """HotelCase AI — offline-first synthetic hotel revenue recovery demonstration."""
 from __future__ import annotations
-import os
 from pathlib import Path
 import pandas as pd
 import streamlit as st
 from hotelcase.sample_data import create_data
 from hotelcase.reconciliation import reconcile,DataValidationError,money
-from hotelcase.storage import connect,sync_cases,get_statuses,get_audit,update_status,log,STATES
+from hotelcase.storage import connect,create_session_workspace,sync_cases,get_statuses,get_audit,update_status,log,STATES
 from hotelcase.agent import investigate
 from hotelcase.evidence import build_packet
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'
-DB_PATH=Path(os.environ.get('HOTELCASE_DB_PATH',str(ROOT/'.local'/'hotelcase.db')))
 st.set_page_config(page_title='HotelCase AI | Revenue Recovery',page_icon='🏨',layout='wide')
 st.markdown('''<style>
 .block-container {padding-top:1.5rem;max-width:1450px;}
@@ -26,31 +24,49 @@ st.title('🏨 HotelCase AI')
 st.caption('Revenue reconciliation • LangGraph investigations • Evidence packets • Local audit trail')
 st.warning('**Demo / synthetic data only.** No live OTA/PMS integration, no real chargebacks, and no automatic submissions or collection actions.',icon='🧪')
 
+# A separate temporary SQLite file is assigned to each Streamlit browser session.
+# Never use a repository-global database for public visitors.
+if 'hotelcase_db_path' not in st.session_state:
+    st.session_state['hotelcase_db_path'] = str(create_session_workspace())
+if 'upload_generation' not in st.session_state:
+    st.session_state['upload_generation'] = 0
+DB_PATH = Path(st.session_state['hotelcase_db_path'])
+
 st.sidebar.header('Workspace')
 property_filter=st.sidebar.selectbox('Property',['All properties','CLT-01','RDU-02'])
 st.sidebar.markdown('**Data inputs**')
-st.sidebar.caption('CSV uploads replace demonstration files for this session. Use synthetic or de-identified data only; never upload payment card numbers or real guest records.')
+st.sidebar.caption('CSV uploads replace demo files only in your browser session. Upload synthetic data only; do NOT upload actual guest, personal or payment records. Files are limited to 2 MB each.')
 files={}
 for key in ('reservations','payments','settlements'):
-    files[key]=st.sidebar.file_uploader(f'{key.title()} CSV',type=['csv'],key=f'upload_{key}')
+    files[key]=st.sidebar.file_uploader(f'{key.title()} CSV',type=['csv'],key=f"upload_{key}_{st.session_state['upload_generation']}")
+st.sidebar.caption('Each browser session has a private temporary review database. Data disappears when the session resets or hosting restarts.')
+if st.sidebar.button('Reset my demo workspace', use_container_width=True):
+    # Reset this visitor only. Old session's temporary DB is not reused.
+    st.session_state['hotelcase_db_path'] = str(create_session_workspace())
+    st.session_state['upload_generation'] += 1
+    st.session_state.pop('investigation_result', None)
+    st.rerun()
 st.sidebar.divider()
 use_ollama=st.sidebar.toggle('Optional local Ollama narration',value=False,help='Requires Ollama running at http://127.0.0.1:11434 and llama3.2:3b. Financial calculations remain unchanged.')
 model=st.sidebar.text_input('Ollama model',value='llama3.2:3b') if use_ollama else 'llama3.2:3b'
 actor=st.sidebar.text_input('Reviewer / actor (demo)',value='Demo Manager',max_chars=60)
-st.sidebar.caption('This is a local single-user demo. Actor names are not authenticated identities.')
+st.sidebar.caption('Public demonstration: visitor workspaces are temporary and isolated. Reviewer names are not authenticated identities.')
 st.sidebar.divider()
 st.sidebar.download_button('Download sample reservations',DATA.joinpath('reservations.csv').read_bytes(),'reservations_sample.csv','text/csv',use_container_width=True)
 st.sidebar.download_button('Download sample payments',DATA.joinpath('payments.csv').read_bytes(),'payments_sample.csv','text/csv',use_container_width=True)
 st.sidebar.download_button('Download sample settlements',DATA.joinpath('settlements.csv').read_bytes(),'settlements_sample.csv','text/csv',use_container_width=True)
 
 try:
+    for key, uploaded in files.items():
+        if uploaded is not None and uploaded.size > 2 * 1024 * 1024:
+            raise ValueError(f'{key.title()} CSV is too large for the public demo (2 MB maximum).')
     frames={key:pd.read_csv(files[key] if files[key] is not None else DATA/f'{key}.csv',dtype=str,keep_default_na=False) for key in files}
     cases,warnings=reconcile(frames['reservations'],frames['payments'],frames['settlements'])
 except Exception as e:
     st.error(f'Could not load/reconcile current data: {e}')
     st.stop()
 
-# A separate local SQLite workspace preserves case reviews across restarts.
+# Per-visitor workspace: no shared cases or audit entries across browsers.
 db=connect(DB_PATH)
 sync_cases(db,cases)
 statuses=get_statuses(db)
@@ -142,13 +158,13 @@ with investigation:
         else:st.caption('Run an investigation to generate recommendations, review evidence, and prepare a downloadable PDF packet.')
 
 with audit:
-    st.subheader('Local append-only event history')
+    st.subheader('My session audit history')
     record=get_audit(db)
     if record:
         st.dataframe(pd.DataFrame(record),hide_index=True,use_container_width=True)
         st.download_button('Export audit CSV',pd.DataFrame(record).to_csv(index=False).encode(),'hotelcase_audit.csv','text/csv')
     else:st.caption('No events yet.')
-    st.caption(f'Local database file: {DB_PATH}. This single-user audit trail is demonstrative and is not tamper-proof or legally certified.')
+    st.caption('This is a session-specific temporary audit trail. It is not tamper-proof, durable or legally certified.')
 
 with data_tab:
     st.subheader('Source data (synthetic defaults)')
@@ -158,4 +174,4 @@ with data_tab:
     st.info('Production use would require verified source integration, authenticated users, encryption, regulatory review, immutable event logging, and secure credential management.')
 
 st.divider()
-st.caption('HotelCase AI MVP v0.1 • Synthetic demo • No OTA submissions, payment processing, or guarantees of recovery.')
+st.caption('HotelCase AI MVP v0.2 • Per-session synthetic demo • No OTA submissions, payment processing, or guarantees of recovery.')

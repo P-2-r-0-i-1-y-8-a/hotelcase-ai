@@ -2,8 +2,18 @@
 from pathlib import Path
 from datetime import datetime,timezone
 import json, sqlite3
+import tempfile
 
 STATES=('OPEN','INVESTIGATED','APPROVED_FOR_MANUAL_SUBMISSION','CLOSED','REJECTED')
+
+def create_session_workspace() -> Path:
+    """Create an unguessable, per-session database path outside the shared repo.
+
+    Call once per Streamlit session and retain the returned path in st.session_state.
+    These files are temporary demo state; they are not durable or production storage.
+    """
+    directory = Path(tempfile.mkdtemp(prefix='hotelcase_session_'))
+    return directory / 'hotelcase.db'
 
 def connect(path: str | Path):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
